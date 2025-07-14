@@ -104,8 +104,11 @@ install_packages() {
             "fd"
             "bat"
             "fzf"
-            "aerospace"
-            "sketchybar"
+        )
+        
+        local tap_packages=(
+            "nikitabobko/tap/aerospace"
+            "felixkratz/formulae/sketchybar"
         )
         
         for package in "${packages[@]}"; do
@@ -117,9 +120,28 @@ install_packages() {
             fi
         done
         
-        # Tap for aerospace and sketchybar if needed
-        brew tap nikitabobko/tap 2>/dev/null || true
-        brew tap FelixKratz/formulae 2>/dev/null || true
+        # Tap for aerospace and sketchybar
+        if ! brew tap | grep -q "nikitabobko/tap"; then
+            log_info "Adding aerospace tap..."
+            brew tap nikitabobko/tap
+        fi
+        
+        if ! brew tap | grep -q "felixkratz/formulae"; then
+            log_info "Adding sketchybar tap..."
+            brew tap felixkratz/formulae
+        fi
+        
+        # Install tap packages
+        for package in "${tap_packages[@]}"; do
+            local package_name
+            package_name=$(basename "$package")
+            if ! brew list "$package_name" >/dev/null 2>&1; then
+                log_info "Installing $package_name..."
+                brew install "$package"
+            else
+                log_info "$package_name is already installed"
+            fi
+        done
         
     elif command_exists apt-get; then
         # Ubuntu/Debian packages
