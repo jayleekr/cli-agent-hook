@@ -162,7 +162,15 @@ setup_repository() {
     if [[ -d "$INSTALL_DIR" ]]; then
         log_info "Updating existing installation..."
         cd "$INSTALL_DIR"
-        git pull origin main
+        # Stash any local changes before pulling
+        git stash push -m "Auto-stash before update" 2>/dev/null || true
+        git pull origin main || {
+            log_warning "Git pull failed, continuing with existing installation"
+            # Try to pop stash if it exists
+            git stash pop 2>/dev/null || true
+        }
+        # Restore stashed changes
+        git stash pop 2>/dev/null || true
     else
         log_info "Cloning repository..."
         git clone "$REPO_URL" "$INSTALL_DIR"
@@ -238,14 +246,49 @@ setup_fish_shell() {
         if [[ "$SHELL" != "$fish_path" ]]; then
             log_info "Setting Fish as default shell..."
             
-            # Add fish to shells if not present
-            if ! grep -q "$fish_path" /etc/shells; then
-                echo "$fish_path" | sudo tee -a /etc/shells
+            # Check if running in SSH session (remote environment)
+            if [[ -n "$SSH_CLIENT" ]] || [[ -n "$SSH_TTY" ]]; then
+                log_info "SSH session detected - using alternative Fish setup method..."
+                
+                # Backup existing .bashrc
+                if [[ -f ~/.bashrc ]]; then
+                    cp ~/.bashrc ~/.bashrc.backup.$(date +%Y%m%d_%H%M%S)
+                    log_info "Created backup of ~/.bashrc"
+                fi
+                
+                # Add Fish auto-start to .bashrc (only for interactive sessions)
+                if ! grep -q "CLI Agent Hook: Auto-start Fish shell" ~/.bashrc 2>/dev/null; then
+                    cat >> ~/.bashrc << 'EOF'
+
+# CLI Agent Hook: Auto-start Fish shell in interactive sessions
+if [[ $- == *i* ]] && [[ -x "$(command -v fish)" ]] && [[ "$TERM" != "dumb" ]]; then
+    # Check if we're not already in fish and not in tmux
+    if [[ "$(basename "$SHELL")" != "fish" ]] && [[ -z "$TMUX" ]]; then
+        echo "Starting Fish shell..."
+        exec fish
+    fi
+fi
+EOF
+                    log_success "Added Fish auto-start to ~/.bashrc (SSH-friendly method)"
+                    log_info "Fish will start automatically in new SSH sessions"
+                else
+                    log_info "Fish auto-start already configured in ~/.bashrc"
+                fi
+            else
+                # Local environment - try traditional chsh method
+                # Add fish to shells if not present
+                if ! grep -q "$fish_path" /etc/shells 2>/dev/null; then
+                    echo "$fish_path" | sudo tee -a /etc/shells
+                fi
+                
+                # Change default shell
+                if chsh -s "$fish_path" 2>/dev/null; then
+                    log_success "Fish shell set as default"
+                else
+                    log_warning "Failed to set Fish as default shell with chsh"
+                    log_info "You can manually set Fish as default or run 'fish' to start it"
+                fi
             fi
-            
-            # Change default shell
-            chsh -s "$fish_path"
-            log_success "Fish shell set as default"
         else
             log_info "Fish is already the default shell"
         fi
@@ -294,40 +337,15 @@ post_install() {
 # Create CLI command
 create_cli_command() {
     local cli_script="$INSTALL_DIR/bin/cli-agent-hook"
-    mkdir -p "$INSTALL_DIR/bin"
     
-    cat > "$cli_script" << 'EOF'
-#!/bin/bash
-# CLI Agent Hook command line interface
-
-INSTALL_DIR="$HOME/.cli-agent-hook"
-DOTFILES_DIR="$INSTALL_DIR"
-
-case "$1" in
-    "install")
-        "$INSTALL_DIR/install.sh"
-        ;;
-    "update")
-        cd "$INSTALL_DIR" && git pull origin main
-        "$INSTALL_DIR/install.sh"
-        ;;
-    "backup")
-        backup_dir="$HOME/.cli-agent-hook-backup-$(date +%Y%m%d_%H%M%S)"
-        mkdir -p "$backup_dir"
-        echo "Creating backup in $backup_dir"
-        # Add backup logic here
-        ;;
-    "restore")
-        echo "Restore functionality coming soon..."
-        ;;
-    *)
-        echo "Usage: cli-agent-hook {install|update|backup|restore}"
-        exit 1
-        ;;
-esac
-EOF
-    
-    chmod +x "$cli_script"
+    # Make sure the existing cli-agent-hook script is executable
+    if [[ -f "$cli_script" ]]; then
+        chmod +x "$cli_script"
+        log_success "CLI script already exists and made executable"
+    else
+        log_warning "CLI script not found, this may indicate an incomplete installation"
+        return 1
+    fi
     
     # Add to PATH if not already there
     if ! echo "$PATH" | grep -q "$INSTALL_DIR/bin"; then
