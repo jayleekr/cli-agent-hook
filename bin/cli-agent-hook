@@ -41,6 +41,15 @@ Commands:
     validate [component]         Validate configuration files
     status                       Show installation status
     clean                        Remove all configurations
+    
+    # Hook Management Commands
+    hook-status                  Show Claude hooks status
+    hook-disable                 Disable Claude hooks
+    hook-enable                  Enable Claude hooks
+    hook-reset                   Reset hooks to default configuration
+    hook-remove                  Completely remove hooks
+    hook-troubleshoot           Run hook diagnostics
+    
     help                         Show this help message
 
 Components:
@@ -52,6 +61,9 @@ Examples:
     cli-agent-hook backup                     # Backup all configs
     cli-agent-hook restore fish              # Restore Fish config
     cli-agent-hook validate tmux             # Validate Tmux config
+    cli-agent-hook hook-status               # Check hooks status
+    cli-agent-hook hook-disable              # Disable all hooks
+    cli-agent-hook hook-remove               # Remove hooks completely
 
 For more information, visit: https://github.com/jayleekr/cli-agent-hook
 EOF
@@ -222,6 +234,251 @@ install_component() {
     esac
 }
 
+# Check Claude hooks status
+check_hooks_status() {
+    log_info "Checking Claude hooks status..."
+    echo
+    
+    # Check if .claude directory exists
+    if [[ -L "$HOME/.claude" ]]; then
+        echo "✅ Claude hooks directory: Symlinked to $(readlink "$HOME/.claude")"
+    elif [[ -d "$HOME/.claude" ]]; then
+        echo "⚠️  Claude hooks directory: Exists but not symlinked"
+    else
+        echo "❌ Claude hooks directory: Not found"
+        return 1
+    fi
+    
+    # Check settings.json
+    if [[ -f "$HOME/.claude/settings.json" ]]; then
+        echo "✅ Claude settings: Found"
+        # Validate JSON
+        if command -v python3 >/dev/null 2>&1; then
+            if python3 -m json.tool "$HOME/.claude/settings.json" >/dev/null 2>&1; then
+                echo "✅ Claude settings: Valid JSON"
+            else
+                echo "❌ Claude settings: Invalid JSON"
+            fi
+        fi
+    else
+        echo "❌ Claude settings: Not found"
+    fi
+    
+    # Check hook scripts
+    if [[ -d "$HOME/.claude/hooks" ]]; then
+        echo "✅ Hook scripts directory: Found"
+        local hook_count
+        hook_count=$(find "$HOME/.claude/hooks" -name "*.py" | wc -l)
+        echo "📜 Found $hook_count Python hook scripts"
+        
+        # Check if scripts are executable
+        local non_executable
+        non_executable=$(find "$HOME/.claude/hooks" -name "*.py" ! -perm +111 | wc -l)
+        if [[ $non_executable -eq 0 ]]; then
+            echo "✅ All hook scripts are executable"
+        else
+            echo "⚠️  $non_executable hook scripts are not executable"
+        fi
+    else
+        echo "❌ Hook scripts directory: Not found"
+    fi
+    
+    # Check Python environment
+    if command -v python3 >/dev/null 2>&1; then
+        echo "✅ Python3: Available"
+    else
+        echo "❌ Python3: Not found"
+    fi
+    
+    # Check uv
+    if command -v uv >/dev/null 2>&1; then
+        echo "✅ UV package manager: Available"
+    else
+        echo "⚠️  UV package manager: Not found"
+    fi
+    
+    echo
+}
+
+# Disable Claude hooks
+disable_hooks() {
+    log_info "Disabling Claude hooks..."
+    
+    if [[ -f "$HOME/.claude/settings.json" ]]; then
+        # Backup current settings
+        cp "$HOME/.claude/settings.json" "$HOME/.claude/settings.json.backup.$(date +%Y%m%d_%H%M%S)"
+        
+        # Create disabled settings (empty hooks)
+        cat > "$HOME/.claude/settings.json" << 'EOF'
+{
+  "permissions": {
+    "deny": [
+      "Read(.env)",
+      "Read(**/.env*)",
+      "Read(**/env*)",
+      "Read(**/*.pem)",
+      "Read(**/*.key)",
+      "Read(**/*.crt)",
+      "Read(**/*.cert)",
+      "Read(**/secrets/**)",
+      "Read(**/credentials/**)"
+    ]
+  },
+  "hooks": {}
+}
+EOF
+        log_success "Claude hooks disabled (settings backed up)"
+    else
+        log_warning "No Claude settings found to disable"
+    fi
+}
+
+# Enable Claude hooks
+enable_hooks() {
+    log_info "Enabling Claude hooks..."
+    
+    # Find the most recent backup
+    local backup_file
+    backup_file=$(find "$HOME/.claude" -name "settings.json.backup.*" 2>/dev/null | sort -r | head -n1)
+    
+    if [[ -n "$backup_file" && -f "$backup_file" ]]; then
+        cp "$backup_file" "$HOME/.claude/settings.json"
+        log_success "Claude hooks enabled from backup: $(basename "$backup_file")"
+    else
+        # Restore from dotfiles
+        if [[ -f "$DOTFILES_DIR/.claude/settings.json" ]]; then
+            cp "$DOTFILES_DIR/.claude/settings.json" "$HOME/.claude/settings.json"
+            log_success "Claude hooks enabled from dotfiles"
+        else
+            log_error "No backup or original settings found"
+            return 1
+        fi
+    fi
+}
+
+# Reset hooks to default
+reset_hooks() {
+    log_info "Resetting Claude hooks to default configuration..."
+    
+    if [[ -f "$DOTFILES_DIR/.claude/settings.json" ]]; then
+        # Backup current settings
+        if [[ -f "$HOME/.claude/settings.json" ]]; then
+            cp "$HOME/.claude/settings.json" "$HOME/.claude/settings.json.backup.$(date +%Y%m%d_%H%M%S)"
+        fi
+        
+        # Copy default settings
+        cp "$DOTFILES_DIR/.claude/settings.json" "$HOME/.claude/settings.json"
+        
+        # Make scripts executable
+        find "$HOME/.claude/hooks" -name "*.py" -exec chmod +x {} \; 2>/dev/null || true
+        
+        log_success "Claude hooks reset to default configuration"
+    else
+        log_error "Default settings not found in dotfiles"
+        return 1
+    fi
+}
+
+# Remove hooks completely
+remove_hooks() {
+    log_warning "This will completely remove Claude hooks"
+    read -p "Are you sure? (y/N): " -n 1 -r
+    echo
+    
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+        # Backup before removal
+        if [[ -d "$HOME/.claude" ]]; then
+            local backup_dir="$HOME/.claude.backup.$(date +%Y%m%d_%H%M%S)"
+            mv "$HOME/.claude" "$backup_dir"
+            log_success "Claude hooks removed (backed up to: $backup_dir)"
+        else
+            log_info "No Claude hooks directory found"
+        fi
+    else
+        log_info "Hook removal cancelled"
+    fi
+}
+
+# Troubleshoot hooks
+troubleshoot_hooks() {
+    log_info "Running Claude hooks diagnostics..."
+    echo
+    
+    echo "=== System Information ==="
+    echo "OS: $(uname -s) $(uname -r)"
+    echo "Architecture: $(uname -m)"
+    echo "User: $USER"
+    echo "Home: $HOME"
+    echo "Shell: $SHELL"
+    echo
+    
+    echo "=== Python Environment ==="
+    if command -v python3 >/dev/null 2>&1; then
+        echo "Python3 version: $(python3 --version)"
+        echo "Python3 path: $(which python3)"
+        
+        # Test JSON module
+        if python3 -c "import json; print('JSON module: OK')" 2>/dev/null; then
+            echo "JSON module: ✅ Available"
+        else
+            echo "JSON module: ❌ Not available"
+        fi
+        
+        # Test subprocess module
+        if python3 -c "import subprocess; print('Subprocess module: OK')" 2>/dev/null; then
+            echo "Subprocess module: ✅ Available"
+        else
+            echo "Subprocess module: ❌ Not available"
+        fi
+    else
+        echo "❌ Python3 not found"
+    fi
+    echo
+    
+    echo "=== Claude Hooks Structure ==="
+    if [[ -d "$HOME/.claude" ]]; then
+        echo "Claude directory: ✅ Found"
+        find "$HOME/.claude" -type f | head -20 | while read -r file; do
+            echo "  📄 $file"
+        done
+    else
+        echo "Claude directory: ❌ Not found"
+    fi
+    echo
+    
+    echo "=== Hook Script Tests ==="
+    if [[ -d "$HOME/.claude/hooks" ]]; then
+        for script in "$HOME/.claude/hooks"/*.py; do
+            if [[ -f "$script" ]]; then
+                echo -n "Testing $(basename "$script"): "
+                if python3 -m py_compile "$script" 2>/dev/null; then
+                    echo "✅ Syntax OK"
+                else
+                    echo "❌ Syntax Error"
+                fi
+            fi
+        done
+    fi
+    echo
+    
+    echo "=== Permissions Check ==="
+    if [[ -d "$HOME/.claude" ]]; then
+        echo "Claude directory permissions: $(stat -f "%A" "$HOME/.claude" 2>/dev/null || stat -c "%a" "$HOME/.claude" 2>/dev/null || echo "unknown")"
+        if [[ -f "$HOME/.claude/settings.json" ]]; then
+            echo "Settings file permissions: $(stat -f "%A" "$HOME/.claude/settings.json" 2>/dev/null || stat -c "%a" "$HOME/.claude/settings.json" 2>/dev/null || echo "unknown")"
+        fi
+    fi
+    echo
+    
+    echo "=== Recent Error Logs ==="
+    if [[ -f "$HOME/.claude/eslint_errors.json" ]]; then
+        echo "ESLint errors found:"
+        tail -n 20 "$HOME/.claude/eslint_errors.json" 2>/dev/null || echo "Cannot read error log"
+    else
+        echo "No error logs found"
+    fi
+}
+
 # Main command handler
 main() {
     if [[ $# -eq 0 ]]; then
@@ -259,6 +516,24 @@ main() {
             for component in "${components[@]}"; do
                 install_component "$component"
             done
+            ;;
+        "hook-status")
+            check_hooks_status
+            ;;
+        "hook-disable")
+            disable_hooks
+            ;;
+        "hook-enable")
+            enable_hooks
+            ;;
+        "hook-reset")
+            reset_hooks
+            ;;
+        "hook-remove")
+            remove_hooks
+            ;;
+        "hook-troubleshoot")
+            troubleshoot_hooks
             ;;
         "update")
             log_info "Updating CLI Agent Hook..."

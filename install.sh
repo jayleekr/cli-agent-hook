@@ -194,6 +194,39 @@ setup_dotfiles() {
         # Karabiner Elements
         create_symlink "$DOTFILES_DIR/config/karabiner" "$HOME/.config/karabiner"
     fi
+    
+    # Claude CLI hooks and settings
+    if [[ -d "$DOTFILES_DIR/.claude" ]]; then
+        create_symlink "$DOTFILES_DIR/.claude" "$HOME/.claude"
+        
+        # Make Python hook scripts executable
+        find "$HOME/.claude/hooks" -name "*.py" -exec chmod +x {} \;
+        
+        # Copy audio files if they exist
+        if [[ -d "$DOTFILES_DIR/.claude/audio" ]]; then
+            mkdir -p "$HOME/.claude/audio"
+            cp -r "$DOTFILES_DIR/.claude/audio/"* "$HOME/.claude/audio/" 2>/dev/null || true
+            log_info "Audio files copied for hook notifications"
+        fi
+        
+        # Install uv if not present (Python package manager for hooks)
+        if ! command_exists uv; then
+            log_info "Installing uv (Python package manager)..."
+            curl -LsSf https://astral.sh/uv/install.sh | sh
+            export PATH="$HOME/.cargo/bin:$PATH"
+        fi
+        
+        # Set up Python environment for hooks
+        if command_exists uv; then
+            log_info "Setting up Python environment for Claude hooks..."
+            cd "$HOME/.claude/hooks"
+            uv python install 3.11 2>/dev/null || true
+            uv venv --python 3.11 2>/dev/null || true
+            uv pip install requests 2>/dev/null || true
+        fi
+        
+        log_success "Claude CLI hooks and settings installed"
+    fi
 }
 
 # Set Fish as default shell
